@@ -441,12 +441,11 @@ def activation(results: Path = typer.Option(..., "--from"),
         acc = (pin @ weights.T).astype(float)
         s.stage("fitting the activation model")
         inv_grid = np.arange(15.0, 80.01, 0.05)
-        bias_grid = np.arange(-40.0, 40.01, 1.0)
+        bias_grid = np.arange(-80.0, 80.01, 1.0)         # phase-2 biases reach -63
         fits = []
         for n in s.track(range(neurons), "neurons", total=neurons):
-            allowed = np.zeros(prof.shape[1], bool)
-            allowed[POI1[n] + 5:POI1[n] + 600] = True
-            allowed[L2_READS[0]:L2_READS[1]] = True
+            allowed = np.zeros(prof.shape[1], bool)      # layer 2's reads of hidden_q only;
+            allowed[L2_READS[0]:L2_READS[1]] = True       #   the acc region contaminates (b, s)
             pois = leak_points(prof, labels[:count, n], acc[:, n], allowed)
             inv, bias = fit_neuron(prof[:, pois], labels[:count, n], tgt[:, pois],
                                    acc[:, n], inv_grid, bias_grid)
@@ -585,6 +584,11 @@ def extract(campaign: list[str] = typer.Option(..., "--campaign",
             sweep_traces: int = typer.Option(3000, "--sweep-traces"),
             l2_traces: int = typer.Option(1000, "--l2-traces"),
             l2_repeats: int = typer.Option(2, "--l2-repeats"),
+            span: str = typer.Option("-60,420", "--span",
+                                     help="accumulator sweep window; use a symmetric "
+                                          "span (e.g. -350,350) when W1 rows are "
+                                          "sign-flipped pairs, or the shared window "
+                                          "collapses to saturation"),
             offline: bool = typer.Option(False, "--offline",
                                          help="refuse to touch the device")):
     """Extract a whole 10-6-1 network: captures what is missing, reuses what is not."""
@@ -631,7 +635,8 @@ def extract(campaign: list[str] = typer.Option(..., "--campaign",
         W1a = np.array(W1)
         s.detail(f"W1 = {W1}")
 
-        vectors, accs = craft(W1a, sweep_traces)
+        sweep_lo, sweep_hi = (int(v) for v in span.split(","))
+        vectors, accs = craft(W1a, sweep_traces, (sweep_lo, sweep_hi))
         sweep, actdir = work / "sweep", work / "act_profile"
         s.stage("accumulator sweep and activation profile")
         if need(sweep):

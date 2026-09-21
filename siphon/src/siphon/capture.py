@@ -1,12 +1,29 @@
 """Trace capture on the ChipWhisperer: flash the target, then collect traces."""
 from __future__ import annotations
 
+import os
 import random
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-NONZERO_INPUTS = [-7, -6, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 6, 7]
+
+def _hot_spot_inputs() -> list[int]:
+    # The hot-spot input values (layer-1 inputs are int8, so any -128..127 is
+    # legal). SIPHON_INPUTS overrides the default with a comma-separated set;
+    # positive-only magnitudes are mirrored to negative. Wider magnitudes make
+    # v = w*x large enough that the accumulator leaks the weight MAGNITUDE, not
+    # only its sign - needed for small weights (see notes/26-magnitude-poi.md).
+    env = os.environ.get("SIPHON_INPUTS")
+    if not env:
+        return [-7, -6, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 6, 7]
+    vals = sorted({int(v) for v in env.split(",") if v.strip()})
+    if all(v > 0 for v in vals):
+        vals = sorted(vals + [-v for v in vals])
+    return vals
+
+
+NONZERO_INPUTS = _hot_spot_inputs()
 SAMPLES = 24430
 WARMUP = 50                     # the first traces after a flash drift
 

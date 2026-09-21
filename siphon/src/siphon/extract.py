@@ -106,12 +106,13 @@ def layer1_nonlinearity(profile_dir: Path, target_dir: Path, weights: np.ndarray
     tgt = load_traces(target_dir, traces, FULL, reporter).astype(np.float64)
 
     inv_grid = np.arange(15.0, 80.01, 0.05)              # candidate 1/scale
-    bias_grid = np.arange(-40.0, 40.01, 1.0)             # candidate bias
+    bias_grid = np.arange(-80.0, 80.01, 1.0)             # candidate bias (phase-2 biases reach -63)
     biases, scales = [], []
     for n in reporter.track(range(weights.shape[0]), "neurons", total=weights.shape[0]):
-        allowed = np.zeros(prof.shape[1], bool)          # restrict POI search to
-        allowed[POI1[n] + 5:POI1[n] + 600] = True        #   after this neuron's acc
-        allowed[L2_READS[0]:L2_READS[1]] = True          #   and layer 2's reads of it
+        allowed = np.zeros(prof.shape[1], bool)          # search only layer 2's reads of
+        allowed[L2_READS[0]:L2_READS[1]] = True          #   hidden_q, where a leaks cleanly;
+        #   the accumulator region also passes the a-leak filter but carries raw acc, which
+        #   contaminates the (b, s) fit (measured: it loses n3 on the phase-2 target)
         pois = act.leak_points(prof, labels[:traces, n], acc[:, n], allowed)
         inv, bias = act.fit_neuron(prof[:, pois], labels[:traces, n], tgt[:, pois],
                                    acc[:, n], inv_grid, bias_grid)

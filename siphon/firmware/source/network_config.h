@@ -30,7 +30,7 @@ static const int ACT1_SCALE_INV = 0; // we are not using this parameter
 
 // values for layer 2
 static const int8_t L2_W[NET_L2][NET_L1] = {
-    { 4, -1, 7, -3, 6, -2 }
+    { 0, 0, 2, -2, -2, 2 }
 };
 
 static const int32_t L2_B[NET_L2] = { 0 };

@@ -1,0 +1,18 @@
+# Phase-2 target, wide hot-spot inputs, layer-1 input column 0.
+# Recapture with SIPHON_INPUTS set to large magnitudes so v = w*x leaves the
+# sign-only regime and the accumulator leaks the weight magnitude. Profiles from
+# the column-1 campaign; only the attack set is per column. See notes/26.
+name: "phase 2 wide, input column 0"
+column: 0
+profiling_column: 1
+neurons: 6
+
+profiling: data/phase2_wide/campaign
+attack: data/phase2_wide/attack_c0
+firmware_config: firmware/source/network_config.h
+
+window: [0, 10000]
+profiling_traces: 1000
+attack_traces: 300
+pois_per_neuron: 1
+poi_separation: 300

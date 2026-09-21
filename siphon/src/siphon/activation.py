@@ -62,19 +62,29 @@ def leak_points(traces: np.ndarray, labels: np.ndarray, acc: np.ndarray,
 
 
 def _distances(profile: np.ndarray, labels: np.ndarray, target: np.ndarray) -> np.ndarray:
-    # Mahalanobis distance (+ log-det) of each target trace to each activation's
-    # template; precomputed once so the (b,s) grid search below is free.
+    # Mahalanobis distance of each target trace to each activation's template,
+    # under a POOLED covariance shared across classes. A per-class covariance
+    # needs >width traces per class, which the extreme classes (a saturated at 7)
+    # never have, so they used to score inf and disqualify the true (b, s) the
+    # moment it routed any trace there. The pooled estimate uses all within-class
+    # residuals, so every class is templated; its log-det is common to all
+    # classes and drops out of the argmin, so it is omitted.
     width = profile.shape[1]
     out = np.full((len(target), MAX_ACT + 1), np.inf)
+    means, residuals = {}, []
     for value in range(MAX_ACT + 1):
         rows = profile[labels == value]
-        if len(rows) < width + 3:                # too few to estimate covariance
+        if len(rows) < 2:                        # need a mean and a residual
             continue
-        mean = rows.mean(0)
-        cov = np.cov(rows.T, ddof=1).reshape(width, width) + 1e-10 * np.eye(width)
+        means[value] = rows.mean(0)
+        residuals.append(rows - means[value])
+    if not residuals:
+        return out
+    pooled = np.cov(np.concatenate(residuals).T, ddof=1).reshape(width, width)
+    inv = np.linalg.inv(pooled + 1e-9 * np.eye(width))
+    for value, mean in means.items():
         delta = target - mean
-        out[:, value] = (np.einsum("ij,jk,ik->i", delta, np.linalg.inv(cov), delta)
-                         + np.linalg.slogdet(cov)[1])
+        out[:, value] = np.einsum("ij,jk,ik->i", delta, inv, delta)
     return out
 
 

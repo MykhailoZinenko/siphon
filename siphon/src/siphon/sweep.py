@@ -60,13 +60,21 @@ def hidden_hotspot(weights: np.ndarray, params: list[tuple[float, int]], count: 
         return np.array([min(7, max(0, int(np.floor((acc[o] + b) / inv + 0.5))))
                          for o, (inv, b) in enumerate(params)])
 
+    # Push the other neurons below their own step-off by a RANDOM margin, redrawn
+    # every try. A fixed target (e.g. "all others at first-140") is infeasible when
+    # two neurons are sign-flipped (n2 = -n5): they cannot both be driven negative,
+    # so the least-squares projection sticks near one bad point and only the lowest
+    # level of the isolated neuron is ever reached. Randomising the margin explores
+    # the ridge where anti-correlated partners both land at zero, which reaches every
+    # activation level (measured: n3 went from level 1 only to levels 1..4).
+    floor = np.minimum(0.0, first)                       # below both zero and the step-off
     pool: dict[tuple[int, int], list[np.ndarray]] = {}   # (neuron, level) -> inputs achieving it
     for j in range(neurons):
         for level in range(1, levels + 1):
-            want = np.array([first[i] - 140.0 if i != j else level * params[j][0] - params[j][1]
-                             for i in range(neurons)])    # push others below 0, j to `level`
             for _ in range(tries):
-                x = np.clip(np.rint(pinv @ (want + rng.normal(0, 6, neurons))),
+                want = floor - rng.uniform(10, 220, neurons)   # others well below a = 0
+                want[j] = level * params[j][0] - params[j][1]  # the isolated neuron at `level`
+                x = np.clip(np.rint(pinv @ (want + rng.normal(0, 10, neurons))),
                             INT8_LO, INT8_HI).astype(int)
                 a = activation(x)
                 if a[j] == level and not a[np.arange(neurons) != j].any():   # only j non-zero

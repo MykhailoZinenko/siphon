@@ -80,6 +80,12 @@ def recover(profiling: dict[int, np.ndarray], attack: np.ndarray, tags: np.ndarr
     results = []
     for j in range(inputs):
         rows = tags[:, 0] == j                          # traces where neuron j is the hot one
+        if not rows.any():                              # dead neuron: activation is always 0,
+            results.append(InputResult(                 #   so it can never be isolated and its
+                index=j, pois=[], truth=None if truth is None else truth[j],
+                recovered=0, margin=0.0, templates=0,   #   layer-2 weight is moot (a*w2 = 0)
+                coverage=0.0))
+            continue
         levels = tags[rows, 1]                           # its activation value a
         values = np.concatenate([manifest[k][j] * levels for k in keep]).astype(np.int64)  # v=w2*a
         weights = np.concatenate([np.full(rows.sum(), manifest[k][j]) for k in keep])

@@ -6,9 +6,12 @@ import numpy as np
 
 def leak_profile(traces_by_capture, inputs_by_capture, flashed_weights,
                  hypotheses=None, min_class: int = 30) -> np.ndarray:
-    # Per-sample SNR of the trace grouped by v = w*x; no leakage model.
-    # SNR = Var_v(E[trace|v]) / E_v(Var[trace|v]); v is known exactly here.
-    # (HW model was blind to doubling, HW(2x)=HW(x), and picked wrong points.)
+    # Per-sample SNR over |v| computed WITHIN each sign of v = w*x; no model.
+    # A leak that encodes only sign(v) has enormous SNR-over-signed-v (two tight,
+    # far-apart clusters) but carries NO magnitude, so the old signed-v SNR chose
+    # it and could not tell +/-2 from +/-5 when v was small. Grouping by |v|
+    # inside each sign instead rewards points that are graded in magnitude, which
+    # is what distinguishes the weight. Sign is still recovered from the templates.
     # `hypotheses` is accepted and ignored so callers need not special-case it.
 
     # within a capture every neuron's v is a fixed multiple of the same input,
@@ -17,14 +20,21 @@ def leak_profile(traces_by_capture, inputs_by_capture, flashed_weights,
                              for inputs, weight in zip(inputs_by_capture, flashed_weights)])
     traces = np.concatenate(traces_by_capture)
 
-    present, counts = np.unique(values, return_counts=True)
-    usable = present[counts >= min_class]              # drop v with too few traces
-    if len(usable) < 2:
-        raise ValueError("not enough distinct values of v to locate the leak")
-
-    means = np.stack([traces[values == v].mean(0) for v in usable])    # E[trace|v]
-    noise = np.stack([traces[values == v].var(0) for v in usable]).mean(0)  # E_v Var[trace|v]
-    return means.var(0) / np.maximum(noise, 1e-12)     # between-class / within-class
+    between = np.zeros(traces.shape[1])
+    within = np.zeros(traces.shape[1])
+    for sign in (1, -1):
+        block = traces[np.sign(values) == sign]
+        mags = np.abs(values[np.sign(values) == sign])
+        present, counts = np.unique(mags, return_counts=True)
+        usable = present[counts >= 2]                  # need >=2 traces for a variance
+        if len(usable) < 3:                            # need >=3 magnitudes to see a gradient
+            continue
+        means = np.stack([block[mags == m].mean(0) for m in usable])       # E[trace | |v|]
+        between += means.var(0)                        # spread of the per-magnitude means
+        within += np.stack([block[mags == m].var(0) for m in usable]).mean(0)
+    if not between.any():
+        raise ValueError("not enough distinct magnitudes of v to locate the leak")
+    return between / np.maximum(within, 1e-12)          # between-magnitude / within
 
 
 def assign_pois(profiles: dict[int, np.ndarray], separation: int) -> list[int]:
