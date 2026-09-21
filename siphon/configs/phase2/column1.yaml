@@ -1,0 +1,22 @@
+# Phase-2 target: layer-1 profiling campaign on the TRAINED network.
+#
+# The campaign must be captured on the target's own model, not reused from
+# another one: it overwrites only column 1 and leaves the trained network's
+# other nine columns in place, so the accumulator POI sees the same neighbour
+# weight-loads during profiling as during the attack. A campaign from a
+# different model mismatches that context - the measured cross-model 11/60.
+# See notes/24-campaign-must-match.md and notes/25-phase2.md.
+name: "phase 2, layer 1, input column 1"
+column: 1
+profiling_column: 1
+neurons: 6
+
+profiling: data/phase2/campaign
+attack: data/phase2/attack_c1
+firmware_config: firmware/source/network_config.h
+
+window: [0, 10000]
+profiling_traces: 1000
+attack_traces: 300
+pois_per_neuron: 1
+poi_separation: 300

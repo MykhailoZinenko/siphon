@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "siphon"
+version = "0.1.0"
+description = "Template-based extraction of quantized neural-network weights from power traces"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "pyyaml",
+    "typer",
+    "rich",
+]
+
+[project.optional-dependencies]
+hardware = ["chipwhisperer", "tqdm"]
+
+[project.scripts]
+siphon = "siphon.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]

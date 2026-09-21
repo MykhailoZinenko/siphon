@@ -1,0 +1,20 @@
+# Layer 1, input column 6 - part of the whole-layer recovery.
+#
+# Every column in this directory profiles from the SAME campaign, the one
+# captured on column 1. The leak point depends on the neuron, not on the input
+# index, so templates built there score any column's attack traces; see
+# notes/15-transfer-and-scaling.md. Only the attack set is per column.
+name: "layer 1, input column 6"
+column: 6
+profiling_column: 1
+neurons: 6
+
+profiling: data/rebuilt_firmware/campaign_column
+attack: data/rebuilt_firmware/attack_c6
+firmware_config: firmware/source/network_config.h
+
+window: [0, 10000]
+profiling_traces: 1000
+attack_traces: 300
+pois_per_neuron: 1
+poi_separation: 300
