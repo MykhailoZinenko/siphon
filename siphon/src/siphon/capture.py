@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import random
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -138,7 +138,7 @@ class Step:
 
 def execute(plan: "list[Step]", reporter) -> None:
     """Run a capture plan, reflashing only when consecutive steps' firmware differs."""
-    from .firmware import build, restore, set_array, set_row
+    from .firmware import patched
 
     for step in plan:
         check_free(step.out)            # fail fast before touching the device
@@ -152,6 +152,15 @@ def execute(plan: "list[Step]", reporter) -> None:
 
     total = sum(s.count for s in plan)
     reporter.detail(f"{len(plan)} captures, {len(groups)} flash(es), {total} traces")
+    patches = any(step.arrays or step.rows for step in plan)
+    with patched(f"a capture into {plan[0].out.parent.name}") if patches else nullcontext():
+        _run_groups(groups, reporter)
+
+
+def _run_groups(groups, reporter) -> None:
+    """Flash each group once and collect its steps; the header is restored whatever happens."""
+    from .firmware import build, restore, set_array, set_row
+
     try:
         for i, (_, steps) in enumerate(groups, 1):
             restore()                   # start each group from the pristine header

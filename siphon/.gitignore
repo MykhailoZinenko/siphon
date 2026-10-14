@@ -1,1 +1,4 @@
 runs/
+
+# lock held while a capture owns network_config.h
+firmware/.header-patched

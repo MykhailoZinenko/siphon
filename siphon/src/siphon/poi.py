@@ -37,6 +37,68 @@ def leak_profile(traces_by_capture, inputs_by_capture, flashed_weights,
     return between / np.maximum(within, 1e-12)          # between-magnitude / within
 
 
+def _tvla_once(traces: np.ndarray, values: np.ndarray, min_class: int) -> np.ndarray:
+    # Per-sample |Welch t| of each class of v against the rest, maxed over classes.
+    # Each class's moments are accumulated once and the complement is derived from
+    # the totals, so no class ever materialises a copy of the other traces.
+    shift = traces[0].astype(np.float64)        # shifts cancel in both t terms
+    counts, sums, squares = {}, {}, {}
+    for value in np.unique(values):
+        rows = traces[values == value].astype(np.float64) - shift
+        counts[value] = len(rows)
+        sums[value] = rows.sum(axis=0)
+        squares[value] = np.einsum("ij,ij->j", rows, rows)
+
+    total_n = sum(counts.values())
+    total_sum = sum(sums.values())
+    total_square = sum(squares.values())
+
+    best = np.zeros(traces.shape[1])
+    for value, n_a in counts.items():
+        n_b = total_n - n_a
+        if n_a < max(min_class, 2) or n_b < 2:
+            continue
+        mean_a = sums[value] / n_a
+        mean_b = (total_sum - sums[value]) / n_b
+        var_a = np.maximum(squares[value] - n_a * mean_a ** 2, 0.0) / (n_a - 1)
+        var_b = np.maximum(total_square - squares[value] - n_b * mean_b ** 2, 0.0) / (n_b - 1)
+        denom = np.sqrt(var_a / n_a + var_b / n_b)
+        best = np.maximum(best, np.abs(mean_a - mean_b) / np.maximum(denom, 1e-12))
+    return best
+
+
+def tvla_profile(traces_by_capture, inputs_by_capture, flashed_weights,
+                 hypotheses=None, min_class: int = 30,
+                 scope: str = "pooled") -> np.ndarray:
+    # Welch t over classes of v, as an alternative to the SNR of leak_profile:
+    # TVLA asks "is this sample's mean different for some v", SNR asks "is it
+    # graded in |v|".
+    #
+    # `scope` decides what the class is contrasted against, and it matters here.
+    # "pooled" throws all captures together, which is the comparable grouping -
+    # but a class like v = +-49 exists only in the capture holding w = 7, and
+    # that capture differs from the others in EVERY neuron's weight, so a sample
+    # carrying a neighbour's weight load separates it just as well as the
+    # multiply does. "capture" runs the test inside each capture, where the
+    # other weights are constant and cannot contribute, then averages the
+    # per-capture profiles. The gap between the two is the size of that
+    # confound, so both are reported rather than one being chosen here.
+    values = [(weight * inputs).astype(np.int64)
+              for inputs, weight in zip(inputs_by_capture, flashed_weights)]
+
+    if scope == "pooled":
+        best = _tvla_once(np.concatenate(traces_by_capture), np.concatenate(values), min_class)
+    elif scope == "capture":
+        per = [_tvla_once(t, v, min_class) for t, v in zip(traces_by_capture, values)]
+        best = np.mean(per, axis=0)
+    else:
+        raise ValueError(f"unknown tvla scope {scope!r}, expected 'pooled' or 'capture'")
+
+    if not best.any():
+        raise ValueError("no class of v large enough for a t-test")
+    return best
+
+
 def assign_pois(profiles: dict[int, np.ndarray], separation: int) -> list[int]:
     # One POI per neuron: greedily take each neuron's SNR peak, but keep peaks
     # `separation` apart (one input is read by every neuron, so all six leak).

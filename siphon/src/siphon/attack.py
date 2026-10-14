@@ -3,15 +3,25 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 
 from .config import Config
+from .leakage import template_key
 from .progress import Reporter
-from .poi import assign_pois, extra_pois, leak_profile
+from .poi import assign_pois, extra_pois, leak_profile, tvla_profile
 from .templates import Template, build, coverage, score
 from .traces import ground_truth, load_inputs, load_manifest, load_traces
+
+
+# How the leak points may be located; see poi.tvla_profile for the two scopes.
+POI_METHODS = {
+    "snr": leak_profile,
+    "tvla": tvla_profile,
+    "tvla-capture": partial(tvla_profile, scope="capture"),
+}
 
 
 @dataclass
@@ -24,6 +34,8 @@ class Profile:
     window: tuple[int, int]
     pois: list[list[int]]                    # per neuron
     templates: list[dict[int, Template]]     # per neuron
+    key: str = "v"                           # what the templates are indexed by
+    method: str = "snr"                      # what located the POIs
 
     @property
     def neurons(self) -> int:
@@ -51,12 +63,10 @@ class NeuronResult:
         return self.recovered == self.truth
 
 
-def profile(config: Config, reporter: Reporter | None = None) -> Profile:
-    # Build POIs and templates from a profiling campaign (no attack traces yet).
-    reporter = reporter or Reporter()
+def load_campaign(config: Config, reporter: Reporter):
+    # The campaign's traces and hot-spot inputs, per capture, plus its manifest.
     manifest = load_manifest(config.profiling)           # capture -> flashed weights
     captures = sorted(manifest)
-
     reporter.stage(f"loading {len(captures)} profiling captures "
                    f"from {config.profiling.name}")
     traces, inputs = [], []
@@ -64,16 +74,28 @@ def profile(config: Config, reporter: Reporter | None = None) -> Profile:
         folder = config.profiling / f"k{k}"
         traces.append(load_traces(folder, config.profiling_traces, config.window, reporter))
         inputs.append(load_inputs(folder, config.profiling_traces, config.prof_column))
+    return manifest, captures, traces, inputs
 
-    reporter.stage("locating each neuron's multiply")
-    profiles = {                                          # SNR profile per neuron
-        n: leak_profile(traces, inputs, [manifest[k][n] for k in captures], config.hypotheses)
+
+def profile(config: Config, reporter: Reporter | None = None) -> Profile:
+    # Build POIs and templates from a profiling campaign (no attack traces yet).
+    reporter = reporter or Reporter()
+    manifest, captures, traces, inputs = load_campaign(config, reporter)
+
+    reporter.stage(f"locating each neuron's multiply ({config.poi_method})")
+    locate = POI_METHODS.get(config.poi_method)
+    if locate is None:
+        raise ValueError(f"unknown poi_method {config.poi_method!r}, "
+                         f"expected one of {', '.join(POI_METHODS)}")
+    profiles = {                                          # one profile per neuron
+        n: locate(traces, inputs, [manifest[k][n] for k in captures], config.hypotheses)
         for n in range(config.neurons)
     }
     primary = assign_pois(profiles, config.poi_separation)   # one POI per neuron, in order
     reporter.detail(f"points of interest, in execution order: {primary}")
 
-    reporter.stage("building templates")
+    reporter.stage(f"building templates keyed on {config.template_key}")
+    key = template_key(config.template_key)
     pois, templates = [], []
     for neuron in reporter.track(range(config.neurons), "neurons", total=config.neurons):
         chosen = (primary[neuron:neuron + 1] if config.pois_per_neuron == 1
@@ -83,10 +105,11 @@ def profile(config: Config, reporter: Reporter | None = None) -> Profile:
                                  for i, k in enumerate(captures)])
         leakage = np.concatenate([t[:, chosen].astype(np.float64) for t in traces])   # trace at POIs
         pois.append(chosen)
-        templates.append(build(values, leakage))
+        templates.append(build(key(values), leakage))
 
     return Profile(source=config.profiling, column=config.prof_column,
-                   window=config.window, pois=pois, templates=templates)
+                   window=config.window, pois=pois, templates=templates,
+                   key=config.template_key, method=config.poi_method)
 
 
 def recover(profile: Profile, config: Config,
@@ -99,6 +122,11 @@ def recover(profile: Profile, config: Config,
     if profile.window != config.window:                  # POIs are indices into the window
         raise ValueError(f"profile was built on window {profile.window}, "
                          f"config uses {config.window}")
+    # a mismatch here would score one variant's traces with another's templates
+    # and report it as the variant the config names
+    if (profile.key, profile.method) != (config.template_key, config.poi_method):
+        raise ValueError(f"profile is {profile.method}/{profile.key}, config asks for "
+                         f"{config.poi_method}/{config.template_key}")
 
     reporter.stage(f"loading attack traces from {config.attack.name}")
     traces = load_traces(config.attack, config.attack_traces, config.window, reporter)
@@ -106,12 +134,13 @@ def recover(profile: Profile, config: Config,
     truth = ground_truth(config.firmware_config, config.column)     # scoring only
 
     reporter.stage("scoring hypotheses")
+    key = template_key(profile.key)              # must match how they were built
     results = []
     for neuron in range(config.neurons):
         pois = profile.pois[neuron]
         templates = profile.templates[neuron]
         scores = score(templates, traces[:, pois].astype(np.float64),
-                       inputs, config.hypotheses)
+                       inputs, config.hypotheses, key=key)
         ranked = sorted(scores.items(), key=lambda kv: -kv[1])      # best likelihood first
         results.append(NeuronResult(
             neuron=neuron,
@@ -120,7 +149,7 @@ def recover(profile: Profile, config: Config,
             recovered=ranked[0][0],
             margin=ranked[0][1] - ranked[1][1],
             templates=len(templates),
-            coverage=coverage(templates, config.hypotheses, inputs),
+            coverage=coverage(templates, config.hypotheses, inputs, key=key),
         ))
     return results
 

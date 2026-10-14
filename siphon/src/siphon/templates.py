@@ -33,18 +33,22 @@ def build(values: np.ndarray, leakage: np.ndarray) -> dict[int, Template]:
     return out
 
 
-def coverage(templates: dict[int, Template], hypotheses, inputs) -> float:
+def coverage(templates: dict[int, Template], hypotheses, inputs, key=None) -> float:
     # Fraction of the v values the hypotheses need that actually have a template.
-    needed = {int(w * x) for w in hypotheses for x in np.unique(inputs)}
+    values = np.array([w * x for w in hypotheses for x in np.unique(inputs)], dtype=np.int64)
+    needed = {int(v) for v in (values if key is None else key(values))}
     return len(needed & set(templates)) / len(needed)
 
 
 def score(templates: dict[int, Template], leakage: np.ndarray, inputs: np.ndarray,
-          hypotheses) -> dict[int, float]:
+          hypotheses, key=None) -> dict[int, float]:
     # Eq. 4.33: summed log-likelihood of the attack traces under each weight guess.
+    # `key` must be the same mapping v -> template index used when building.
     out: dict[int, float] = {}
     for w in hypotheses:
         values = (w * inputs).astype(np.int64)       # the v this weight would produce
+        if key is not None:
+            values = key(values)
         total = 0.0
         for j, value in enumerate(values):
             template = templates.get(int(value))

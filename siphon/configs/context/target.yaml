@@ -1,0 +1,18 @@
+# Profiling-context experiment, variant: other nine columns = target.
+# Same attack set in all three; only the campaign differs. See notes/27-profiling-context.md.
+name: "context target, input column 0"
+column: 0
+neurons: 6
+
+profiling: data/context/camp_target
+attack: data/context/attack
+firmware_config: firmware/source/network_config.h
+
+window: [0, 10000]
+profiling_traces: 1000
+attack_traces: 300
+
+pois_per_neuron: 1
+poi_separation: 300
+poi_method: snr
+template_key: v

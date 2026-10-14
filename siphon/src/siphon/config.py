@@ -24,6 +24,8 @@ class Config:
     attack_traces: int = 300
     pois_per_neuron: int = 1
     poi_separation: int = 300        # minimum gap between two neurons' POIs
+    poi_method: str = "snr"          # "snr" over |v|, or "tvla" t-test per class
+    template_key: str = "v"          # index templates by v, or by "hw" = HW(v)
     # zero is a legal weight and real networks have them
     hypotheses: tuple[int, ...] = field(
         default_factory=lambda: tuple(range(-7, 8))

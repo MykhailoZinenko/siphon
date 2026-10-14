@@ -18,6 +18,30 @@ def hamming_float32(values: np.ndarray) -> np.ndarray:
     )
 
 
+def hamming_int32(values: np.ndarray) -> np.ndarray:
+    # Hamming weight of v as the accumulator holds it: two's-complement int32.
+    # Note the asymmetry this brings: HW(2v) = HW(v) for v > 0, but a negative v
+    # loses a one bit on every doubling (HW(-3) = 31, HW(-6) = 30), because the
+    # high bits are ones and the shift drops one of them.
+    bits = np.asarray(values, dtype=np.int64) & 0xFFFFFFFF
+    return sum(_POPCOUNT[(bits >> shift) & 0xFF] for shift in (0, 8, 16, 24))
+
+
+def template_key(mode: str):
+    # What a template is indexed by. "v" is the measured-leakage attack of
+    # 4.3.2.3; "hw" collapses v into HW(v), which merges values differing by a
+    # factor of two and so cannot separate weights like +3 and +6 - but only
+    # where v > 0 (see hamming_int32). With hot-spot inputs of both signs the
+    # pair is therefore not exactly tied: it is separated by the negative half
+    # alone, which is weaker evidence, not none. Kept selectable to measure the
+    # cost of the HW model instead of asserting it.
+    if mode == "v":
+        return lambda values: np.asarray(values, dtype=np.int64)
+    if mode == "hw":
+        return hamming_int32
+    raise ValueError(f"unknown template key {mode!r}, expected 'v' or 'hw'")
+
+
 def correlate(hypotheses: np.ndarray, traces: np.ndarray) -> np.ndarray:
     # Pearson correlation of every hypothesis row against every trace column.
     H = hypotheses - hypotheses.mean(axis=1, keepdims=True)

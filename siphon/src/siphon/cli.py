@@ -63,7 +63,13 @@ def _header() -> Path:
 def capture_campaign(config: Path = typer.Option(..., "--config", "-c"),
                      out: Path = typer.Option(None, "--out",
                                               help="override the config's campaign directory"),
-                     count: int = typer.Option(1000, "--count", "-n")):
+                     count: int = typer.Option(1000, "--count", "-n"),
+                     context: str = typer.Option("target", "--context",
+                                                 help="the other nine columns: target|zero|random"),
+                     seed: int = typer.Option(1, "--seed",
+                                              help="draw for --context random"),
+                     params: str = typer.Option("target", "--params",
+                                                help="whose bias/requant: target|clone|bias|requant")):
     """Layer-1 profiling campaign: 8 flashes, the whole column varied each time (so v=w*x is covered)."""
     from .campaign import column_for
     from .capture import Step, execute
@@ -72,35 +78,137 @@ def capture_campaign(config: Path = typer.Option(..., "--config", "-c"),
 
     cfg = Config.load(paths.existing(config, "config"))
     where = paths.out(out) if out else cfg.profiling
+    # "clone" is a device the attacker owns outright: he knows neither the
+    # victim's biases nor its requantisation, so he flashes his own.
+    # "bias" and "requant" change one of the two, to tell which one the
+    # accumulator templates actually depend on.
+    clone_bias = (("L1_B", (0,) * cfg.neurons),)
+    clone_scale = (("L1_M0", (CLONE_M0,) * cfg.neurons),
+                   ("L1_N", (CLONE_SHIFT,) * cfg.neurons))
+    choices = {"target": (), "clone": clone_bias + clone_scale,
+               "bias": clone_bias, "requant": clone_scale}
+    if params not in choices:
+        raise typer.BadParameter(f"unknown params {params!r}, expected {'|'.join(choices)}")
+    arrays = choices[params]
+
     plan, manifest = [], {}
     for k in range(CAPTURES):
         values = column_for(k, cfg.neurons)
         manifest[k] = values
-        rows = tuple(("L1_W", o, _row_with(cfg, o, cfg.column, values[o]))
-                     for o in range(cfg.neurons))
+        rows = _campaign_rows(cfg, values, context, seed)
         plan.append(Step(label=f"capture {k}", out=where / f"k{k}",
-                         count=count, column=cfg.column, rows=rows,
-                         note=f"column {cfg.column} = {values}"))
+                         count=count, column=cfg.column, rows=rows, arrays=arrays,
+                         note=f"column {cfg.column} = {values}"
+                              + ("" if context == "target" else f", rest {context}")
+                              + ("" if params == "target" else f", clone {params}")))
 
     with ui.Session("layer-1 profiling campaign",
                     subtitle=[f"column {cfg.column}, {CAPTURES} flashes x {count} traces",
+                              f"other columns: {context}"
+                              + (f" (seed {seed})" if context == "random" else ""),
                               f"into {where}"],
                     sources=paths.existing(config), hardware=True,
                     total_stages=CAPTURES) as s:
         execute(plan, s)
         (where / "manifest.txt").write_text(
             "".join(f"{k} {' '.join(map(str, v))}\n" for k, v in manifest.items()))
+        (where / "context.txt").write_text(          # what the rest of the network held
+            f"context {context}\nseed {seed}\ncolumn {cfg.column}\nparams {params}\n"
+            + "".join(" ".join(map(str, row)) + "\n"
+                      for _, _, row in plan[0].rows))
         s.done("campaign complete", artefact=where)
+
+
+def _weight_rows(cfg: Config) -> list[list[int]]:
+    """L1_W as it stands in the header."""
+    import re
+    from .firmware import patch_in_progress
+    busy = patch_in_progress()
+    if busy:                                     # a crashed run can leave it patched
+        raise typer.BadParameter(
+            f"network_config.h is patched by {busy}; a campaign built from it would "
+            f"keep that campaign's weights as its context")
+    text = cfg.firmware_config.read_text()
+    block = re.search(r"L1_W\[NET_L1\]\[NET_INPUTS\]\s*=\s*\{(.*?)\};", text, re.S).group(1)
+    return [[int(v) for v in row.split(",")] for row in re.findall(r"\{([^}]*)\}", block)]
 
 
 def _row_with(cfg: Config, neuron: int, column: int, value: int) -> tuple[int, ...]:
     """One row of L1_W with a single entry replaced, read from the header."""
-    import re
-    text = cfg.firmware_config.read_text()
-    block = re.search(r"L1_W\[NET_L1\]\[NET_INPUTS\]\s*=\s*\{(.*?)\};", text, re.S).group(1)
-    row = [int(v) for v in re.findall(r"\{([^}]*)\}", block)[neuron].split(",")]
+    row = _weight_rows(cfg)[neuron]
     row[column] = value
     return tuple(row)
+
+
+def _campaign_rows(cfg: Config, values: list[int], context: str,
+                   seed: int) -> tuple[tuple[str, int, tuple[int, ...]], ...]:
+    """L1_W for one capture: the attacked column varied, the rest per `context`.
+
+    "target" leaves the victim's own weights in place, which is the campaign the
+    thesis measured and which needs write access to the victim. "zero" and
+    "random" instead profile a device the attacker owns, so the context no longer
+    matches the victim's - which is the assumption under test.
+    """
+    if context == "target":
+        return tuple(("L1_W", o, _row_with(cfg, o, cfg.column, values[o]))
+                     for o in range(cfg.neurons))
+    if context not in ("zero", "random"):
+        raise typer.BadParameter(f"unknown context {context!r}, expected target|zero|random")
+
+    import random
+    width = len(_weight_rows(cfg)[0])
+    rng = random.Random(seed)                 # redrawn per capture: the context is constant
+    rows = []
+    for neuron in range(cfg.neurons):
+        row = [0] * width if context == "zero" else [rng.randint(-7, 7) for _ in range(width)]
+        row[cfg.column] = values[neuron]      # only the attacked weight varies across captures
+        rows.append(("L1_W", neuron, tuple(row)))
+    return tuple(rows)
+
+
+@app.command("capture-joint")
+def capture_joint(config: Path = typer.Option(..., "--config", "-c"),
+                  out: Path = typer.Option(None, "--out"),
+                  count: int = typer.Option(500, "--count", "-n"),
+                  context: str = typer.Option("zero", "--context",
+                                              help="the other nine columns: target|zero|random"),
+                  seed: int = typer.Option(1, "--seed")):
+    """Joint (weight, bias) campaign on a device the attacker owns: sweep the bias, rotate the weight."""
+    from .campaign import joint_schedule
+    from .capture import Step, execute
+
+    cfg = Config.load(paths.existing(config, "config"))
+    where = paths.out(out) if out else cfg.profiling
+    schedule = joint_schedule(cfg.neurons)
+
+    plan = []
+    for k, (bias, values) in enumerate(schedule):
+        plan.append(Step(
+            label=f"capture {k}", out=where / f"k{k}", count=count, column=cfg.column,
+            rows=_campaign_rows(cfg, values, context, seed),
+            # the attacker owns this device, so its requantisation is his own too
+            arrays=(("L1_B", (bias,) * cfg.neurons),
+                    ("L1_M0", (CLONE_M0,) * cfg.neurons),
+                    ("L1_N", (CLONE_SHIFT,) * cfg.neurons)),
+            note=f"b = {bias:+d}, column {cfg.column} = {values}, rest {context}"))
+
+    with ui.Session("joint (weight, bias) campaign",
+                    subtitle=[f"column {cfg.column}, {len(plan)} flashes x {count} traces",
+                              f"biases {schedule[0][0]:+d}..{schedule[-1][0]:+d}, "
+                              f"other columns {context}",
+                              f"into {where}"],
+                    sources=paths.existing(config), hardware=True,
+                    total_stages=len(plan)) as s:
+        execute(plan, s)
+        (where / "manifest.txt").write_text(
+            "".join(f"{k} {' '.join(map(str, v))}\n"
+                    for k, (_, v) in enumerate(schedule)))
+        (where / "biases.txt").write_text(
+            "".join(f"{k} {b}\n" for k, (b, _) in enumerate(schedule)))
+        (where / "context.txt").write_text(
+            f"context {context}\nseed {seed}\ncolumn {cfg.column}\nparams clone\n"
+            f"biases {' '.join(str(b) for b, _ in schedule)}\n")
+        s.done("joint campaign complete", artefact=where)
 
 
 @app.command("capture-attack")
@@ -375,7 +483,8 @@ def layer(config: list[Path] = typer.Option(..., "--config", "-c"),
         panel_profiles = [profile(c, s.sub) for c in panel]
         results, configs = [], []
         for _, cfg in loaded:
-            key = (cfg.profiling, cfg.prof_column)
+            # the knobs are part of the profile, not just the campaign it came from
+            key = (cfg.profiling, cfg.prof_column, cfg.poi_method, cfg.template_key)
             if not panel and key not in cache:
                 cache[key] = profile(cfg, s.sub)
             s.stage(f"column {cfg.column}")
@@ -539,6 +648,111 @@ def l2bias(results: Path = typer.Option(..., "--from"),
         f"- the intermediate is `acc2 + b2`; one profiling bias is not enough,\n"
         f"  a hypothesis shifts the value out of the profiled set.\n")
     s.done(f"layer-2 bias {bias:+d}", artefact=s.run.report)
+
+
+@app.command()
+def pois(config: Path = typer.Option(..., "--config", "-c"),
+         tolerance: int = typer.Option(10, "--tolerance",
+                                       help="samples within which two methods agree")):
+    """Where SNR and TVLA each put the neurons' leak points, and whether they agree."""
+    from .attack import POI_METHODS, load_campaign
+    from .poi import assign_pois
+
+    cfg = Config.load(paths.existing(config, "config"))
+    with ui.Session("points of interest",
+                    subtitle=[f"campaign {cfg.profiling.name}, column {cfg.prof_column}",
+                              "SNR over |v| against Welch t, pooled and within capture"],
+                    sources=paths.existing(config),
+                    total_stages=1 + len(POI_METHODS)) as s:
+        manifest, captures, traces, inputs = load_campaign(cfg, s)
+        chosen = {}
+        for name, locate in POI_METHODS.items():
+            s.stage(f"{name} profile per neuron")
+            profiles = {n: locate(traces, inputs, [manifest[k][n] for k in captures])
+                        for n in range(cfg.neurons)}
+            chosen[name] = (assign_pois(profiles, cfg.poi_separation), profiles)
+
+    names = list(POI_METHODS)
+    s.table(["neuron"] + names + [f"gap to {names[0]}"],
+            [[str(n)] + [f"{chosen[m][0][n]} ({chosen[m][1][n][chosen[m][0][n]]:.1f})"
+                         for m in names]
+             + [", ".join(str(abs(chosen[m][0][n] - chosen[names[0]][0][n]))
+                          for m in names[1:])]
+             for n in range(cfg.neurons)])
+    reference = chosen[names[0]][0]
+    for m in names[1:]:
+        agree = sum(abs(a - b) <= tolerance for a, b in zip(chosen[m][0], reference))
+        ui.console.print(f"[dim]  {m}: {agree}/{cfg.neurons} neurons within "
+                         f"{tolerance} samples of {names[0]}[/dim]")
+    s.done("sample choices compared")
+
+
+@app.command()
+def joint(config: Path = typer.Option(..., "--config", "-c"),
+          bias_range: int = typer.Option(64, "--bias-range",
+                                         help="hypotheses span -R..R")):
+    """Recover (weight, bias) per neuron from a joint campaign: nothing of the victim's assumed."""
+    import numpy as np
+
+    from . import joint as jt
+    from .poi import assign_pois
+    from .traces import ground_truth, ground_truth_bias, load_inputs, load_manifest, load_traces
+
+    cfg = Config.load(paths.existing(config, "config"))
+    biases = {int(line.split()[0]): int(line.split()[1])
+              for line in (cfg.profiling / "biases.txt").read_text().splitlines()}
+    manifest = load_manifest(cfg.profiling)
+    captures = sorted(manifest)
+
+    with ui.Session("joint (weight, bias) recovery",
+                    subtitle=[f"column {cfg.column}, {len(captures)} captures",
+                              f"hypotheses: 15 weights x {2 * bias_range + 1} biases"],
+                    sources=paths.existing(config), total_stages=3) as s:
+        s.stage(f"loading {len(captures)} captures from {cfg.profiling.name}")
+        traces, inputs = [], []
+        for k in captures:
+            folder = cfg.profiling / f"k{k}"
+            traces.append(load_traces(folder, cfg.profiling_traces, cfg.window, s.sub))
+            inputs.append(load_inputs(folder, cfg.profiling_traces, cfg.prof_column))
+
+        s.stage("locating each neuron's accumulate")
+        accs = {n: jt.accumulators(inputs, [manifest[k][n] for k in captures],
+                                   [biases[k] for k in captures])
+                for n in range(cfg.neurons)}
+        profiles = {n: jt.acc_profile(traces, accs[n]) for n in range(cfg.neurons)}
+        pois = assign_pois(profiles, cfg.poi_separation)
+        s.detail(f"points of interest, in execution order: {pois}")
+
+        s.stage("building accumulator templates and scoring (w, b)")
+        templates, attack_leak = [], []
+        attack = load_traces(cfg.attack, cfg.attack_traces, cfg.window, s.sub)
+        attack_inputs = load_inputs(cfg.attack, cfg.attack_traces, cfg.column)
+        for n in range(cfg.neurons):
+            values = np.concatenate(accs[n])
+            leakage = np.concatenate([t[:, pois[n]].astype(np.float64) for t in traces])
+            templates.append(jt.build(values, leakage))
+            attack_leak.append(attack[:, pois[n]].astype(np.float64))
+        results = jt.recover(templates, attack_leak, pois, attack_inputs,
+                             range(-7, 8), range(-bias_range, bias_range + 1))
+
+    truth_w = ground_truth(cfg.firmware_config, cfg.column)
+    truth_b = ground_truth_bias(cfg.firmware_config)
+    rows = []
+    for r in results:
+        ok_w, ok_b = r.weight == truth_w[r.neuron], r.bias == truth_b[r.neuron]
+        rows.append([str(r.neuron),
+                     f"[{'green' if ok_w else 'red'}]{r.weight:+d}[/]",
+                     f"{truth_w[r.neuron]:+d}",
+                     f"[{'green' if ok_b else 'red'}]{r.bias:+d}[/]",
+                     f"{truth_b[r.neuron]:+d}",
+                     f"{r.margin:.0f}", f"{r.covered:.2f}"])
+    s.table(["neuron", "w", "true w", "b", "true b", "margin", "covered"], rows)
+
+    ok_w = sum(r.weight == truth_w[r.neuron] for r in results)
+    ok_b = sum(r.bias == truth_b[r.neuron] for r in results)
+    s.done(f"{ok_w}/{len(results)} weights, {ok_b}/{len(results)} biases",
+           ok=ok_w == len(results))
+    raise typer.Exit(0 if ok_w == len(results) else 1)
 
 
 @app.command()
@@ -735,8 +949,11 @@ def status(config: list[Path] = typer.Option([], "--config", "-c"),
     if config:
         rows = []
         for _, cfg in _configs(config):
-            truth = (", ".join(f"{w:+d}" for w in ground_truth(cfg.firmware_config, cfg.column))
-                     if cfg.firmware_config.exists() else "-")
+            try:
+                truth = (", ".join(f"{w:+d}" for w in ground_truth(cfg.firmware_config, cfg.column))
+                         if cfg.firmware_config.exists() else "-")
+            except RuntimeError:                 # a capture holds the header
+                truth = "[yellow]capture running[/yellow]"
             rows.append([f"column {cfg.column}", paths.traces_in(cfg.attack),
                          len(list(cfg.profiling.glob("k*"))), truth])
         ui.console.print("")

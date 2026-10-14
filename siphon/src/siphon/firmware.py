@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import PACKAGE_ROOT
@@ -14,7 +15,39 @@ SOURCE = FIRMWARE / "source"
 CONFIG_HEADER = SOURCE / "network_config.h"   # the header the configs read too
 PRISTINE = FIRMWARE / "network_config.h.orig"
 HEX = SOURCE / "simpleserial-target-CWLITEARM.hex"
+LOCK = FIRMWARE / ".header-patched"           # held while the header is a campaign's, not the target's
 TOOLCHAIN = Path("/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/bin")
+
+
+@contextmanager
+def patched(note: str):
+    """Hold the lock for as long as the header describes a campaign, not the target.
+
+    Ground truth is read from the same header the campaign overwrites, so an
+    analysis run that overlaps a capture scores against the campaign's test
+    values and silently reports nonsense. Everything that reads truth refuses
+    while this is held.
+    """
+    LOCK.write_text(f"{os.getpid()}\n{note}\n")
+    try:
+        yield
+    finally:
+        LOCK.unlink(missing_ok=True)
+
+
+def patch_in_progress() -> str | None:
+    """What is patching the header, or None. A lock whose process died is stale."""
+    if not LOCK.exists():
+        return None
+    pid, _, note = LOCK.read_text().partition("\n")
+    try:
+        os.kill(int(pid), 0)                   # signal 0 only tests for existence
+    except (ValueError, ProcessLookupError):
+        LOCK.unlink(missing_ok=True)           # left behind by a killed run
+        return None
+    except PermissionError:
+        pass                                   # someone else's process, so alive
+    return note.strip() or "a capture"
 
 
 def set_column(values: list[int], column: int) -> list[int]:
