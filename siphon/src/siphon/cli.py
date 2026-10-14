@@ -71,12 +71,11 @@ def capture_campaign(config: Path = typer.Option(..., "--config", "-c"),
                      params: str = typer.Option("target", "--params",
                                                 help="whose bias/requant: target|clone|bias|requant")):
     """Layer-1 profiling campaign: 8 flashes, the whole column varied each time (so v=w*x is covered)."""
-    from .campaign import column_for
+    from .campaign import captures_for, column_for
     from .capture import Step, execute
 
-    from .campaign import CAPTURES
-
     cfg = Config.load(paths.existing(config, "config"))
+    CAPTURES = captures_for(cfg.hypotheses)
     where = paths.out(out) if out else cfg.profiling
     # "clone" is a device the attacker owns outright: he knows neither the
     # victim's biases nor its requantisation, so he flashes his own.
@@ -93,7 +92,7 @@ def capture_campaign(config: Path = typer.Option(..., "--config", "-c"),
 
     plan, manifest = [], {}
     for k in range(CAPTURES):
-        values = column_for(k, cfg.neurons)
+        values = column_for(k, cfg.neurons, CAPTURES)
         manifest[k] = values
         rows = _campaign_rows(cfg, values, context, seed)
         plan.append(Step(label=f"capture {k}", out=where / f"k{k}",
@@ -364,13 +363,15 @@ def capture_l2bias(results: Path = typer.Option(..., "--from"),
 @app.command("new-target")
 def new_target(seed: int = typer.Option(..., "--seed"),
                truth: Path = typer.Option(..., "--truth"),
+               weight_min: int = typer.Option(-7, "--weight-min"),
+               weight_max: int = typer.Option(7, "--weight-max"),
                flash_device: bool = typer.Option(True, "--flash/--no-flash")):
     """Write a fresh random network into the device (becomes the new pristine); truth saved for scoring only."""
     from .capture import session
     from .target import flash, generate, save_truth
 
     truth = paths.out(truth)
-    model = generate(seed)
+    model = generate(seed, weights=(weight_min, weight_max))
     with ui.Session(f"new target network (seed {seed})",
                     subtitle=[f"replaces the network on the device",
                               f"truth -> {truth}"],

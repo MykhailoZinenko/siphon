@@ -15,19 +15,25 @@ STUDENT_BACKUP = PACKAGE_ROOT / "firmware" / "network_config.h.student"
 
 
 def generate(seed: int, neurons: int = 6, inputs: int = 10,
-             weight: int = 7, bias: int = 20,
+             weights: tuple[int, int] = (-7, 7), bias: int = 20,
              inv_scale: tuple[float, float] = (22.0, 65.0)) -> dict:
-    """A plausible quantised network: int8 weights, small biases, sane scales."""
+    """A plausible quantised network: int8 weights, small biases, sane scales.
+
+    `weights` is the alphabet the layer is quantised to, e.g. (-7, 7) for the
+    signed 4-bit grid or (0, 15) for the unsigned one. The scales follow it, so
+    a wider alphabet does not simply saturate every activation.
+    """
     rng = np.random.default_rng(seed)
     shift = 4                                     # fixed requantisation shift
-    inv = rng.uniform(*inv_scale, neurons)        # inverse scale, sampled per neuron
+    span = max(abs(weights[0]), abs(weights[1])) / 7.0      # relative to the -7..7 grid
+    inv = rng.uniform(*inv_scale, neurons) * span  # inverse scale, sampled per neuron
     out = {
         "seed": seed,
-        "L1_W": rng.integers(-weight, weight + 1, (neurons, inputs)).tolist(),
+        "L1_W": rng.integers(weights[0], weights[1] + 1, (neurons, inputs)).tolist(),
         "L1_B": rng.integers(-bias, bias + 1, neurons).tolist(),
         "L1_M0": np.round(2.0 ** (31 + shift) / inv).astype(np.int64).tolist(),  # requant multiplier
         "L1_N": [shift] * neurons,
-        "L2_W": rng.integers(-weight, weight + 1, neurons).tolist(),
+        "L2_W": rng.integers(weights[0], weights[1] + 1, neurons).tolist(),
         "L2_B": [int(rng.integers(-5, 6))],
     }
     out["inv_scale"] = [2.0 ** (31 + shift) / m for m in out["L1_M0"]]   # actual scale after rounding

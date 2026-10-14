@@ -6,6 +6,13 @@ from __future__ import annotations
 CAPTURES = 8          # weights 0..7; negatives come from the sign of the input
 
 
+def captures_for(hypotheses) -> int:
+    # One flash per non-negative weight value: the campaign never flashes a
+    # negative weight, the sign of v comes from the sign of the input. So a
+    # -7..7 alphabet needs 8 flashes and an unsigned 0..15 one needs 16.
+    return max(hypotheses) + 1
+
+
 JOINT_BIASES = list(range(-56, 57, 8))   # with the unit-weight capture below,
                                          # acc is covered contiguously over +-63
 
@@ -31,9 +38,9 @@ def joint_schedule(neurons: int) -> list[tuple[int, list[int]]]:
     return out
 
 
-def column_for(capture_index: int, neurons: int) -> list[int]:
-    # Latin square w = (o + k) mod 8: each neuron sees all of 0..7 across
+def column_for(capture_index: int, neurons: int, captures: int = CAPTURES) -> list[int]:
+    # Latin square w = (o + k) mod captures: each neuron sees every value across
     # captures, while neurons hold different weights within one capture (so
     # their leak points stay distinguishable). Zero is included because a
     # zero weight needs a template for v=0, which profiling 1..7 never produces.
-    return [(o + capture_index) % CAPTURES for o in range(neurons)]
+    return [(o + capture_index) % captures for o in range(neurons)]

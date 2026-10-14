@@ -28,6 +28,18 @@ SAMPLES = 24430
 WARMUP = 50                     # the first traces after a flash drift
 
 
+def target_fingerprint() -> str:
+    """Fingerprint of the pristine network, stamped into every captured directory.
+
+    Ground truth is read from the live header, so traces captured from one target
+    and scored after another was flashed compare against the wrong weights - that
+    is silent and it looks like a failed attack.
+    """
+    import hashlib
+    from .firmware import PRISTINE
+    return hashlib.sha256(PRISTINE.read_bytes()).hexdigest()[:16]
+
+
 def check_free(out: Path) -> None:
     """Refuse to write into a directory that already holds traces."""
     if out.exists() and any(out.glob("trace_*.txt")):
@@ -96,6 +108,7 @@ def session(hex_path: Path, progress=lambda _m: None):
             (out / f"trace_{i}.txt").write_text("\n".join(map(str, one(vector))) + "\n")
         (out / "inputs.txt").write_text(
             "".join(" ".join(map(str, v)) + "\n" for v in recorded))   # log every input used
+        (out / "target.sha").write_text(target_fingerprint())   # which network produced these
 
     try:
         yield collect

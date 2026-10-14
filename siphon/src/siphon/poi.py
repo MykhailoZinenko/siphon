@@ -111,10 +111,17 @@ def assign_pois(profiles: dict[int, np.ndarray], separation: int) -> list[int]:
     return sorted(taken)          # sorted = time order = firmware's neuron order
 
 
-def extra_pois(profile: np.ndarray, primary: int, count: int, separation: int) -> list[int]:
-    # More points for one neuron, when a template uses several samples.
+def extra_pois(profile: np.ndarray, primary: int, count: int, separation: int,
+               window: int = 60) -> list[int]:
+    # More points for one neuron, when a template uses several samples. They must
+    # stay within `window` of the primary: every neuron leaks at every neuron's
+    # point (they all read the same input), so the next highest peak in this
+    # neuron's profile usually belongs to a NEIGHBOUR - measured, unconstrained
+    # extra points land hundreds of samples away and cost a weight.
     chosen = [primary]
-    work = profile.copy()
+    work = np.full_like(profile, -np.inf)
+    lo, hi = max(0, primary - window), min(len(profile), primary + window + 1)
+    work[lo:hi] = profile[lo:hi]
     for t in chosen:
         work[max(0, t - separation):t + separation] = -np.inf
     while len(chosen) < count:

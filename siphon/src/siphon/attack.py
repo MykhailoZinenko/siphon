@@ -100,7 +100,7 @@ def profile(config: Config, reporter: Reporter | None = None) -> Profile:
     for neuron in reporter.track(range(config.neurons), "neurons", total=config.neurons):
         chosen = (primary[neuron:neuron + 1] if config.pois_per_neuron == 1
                   else extra_pois(profiles[neuron], primary[neuron],
-                                  config.pois_per_neuron, config.poi_separation))
+                                  config.pois_per_neuron, config.poi_spacing))
         values = np.concatenate([(manifest[k][neuron] * inputs[i]).astype(np.int64)   # v = w*x
                                  for i, k in enumerate(captures)])
         leakage = np.concatenate([t[:, chosen].astype(np.float64) for t in traces])   # trace at POIs
@@ -132,6 +132,14 @@ def recover(profile: Profile, config: Config,
     traces = load_traces(config.attack, config.attack_traces, config.window, reporter)
     inputs = load_inputs(config.attack, config.attack_traces, config.column)
     truth = ground_truth(config.firmware_config, config.column)     # scoring only
+    stamp = config.attack / "target.sha"
+    if stamp.exists():
+        import hashlib
+        current = hashlib.sha256(config.firmware_config.read_bytes()).hexdigest()[:16]
+        if stamp.read_text().strip() != current:
+            reporter.detail("[yellow]warning: these traces were captured from a "
+                            "different network than the header holds; the truth "
+                            "column is not theirs[/yellow]")
 
     reporter.stage("scoring hypotheses")
     key = template_key(profile.key)              # must match how they were built

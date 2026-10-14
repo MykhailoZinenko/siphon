@@ -24,6 +24,7 @@ class Config:
     attack_traces: int = 300
     pois_per_neuron: int = 1
     poi_separation: int = 300        # minimum gap between two neurons' POIs
+    poi_spacing: int = 2             # gap between one neuron's own points
     poi_method: str = "snr"          # "snr" over |v|, or "tvla" t-test per class
     template_key: str = "v"          # index templates by v, or by "hw" = HW(v)
     # zero is a legal weight and real networks have them

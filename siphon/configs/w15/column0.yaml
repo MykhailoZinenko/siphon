@@ -1,0 +1,19 @@
+# Unsigned 4-bit weights, 0..15, as the supervisor asked (2026-10-14).
+# Twice the alphabet of the -7..7 grid, so the campaign flashes 16 values
+# instead of 8 and the hypothesis set doubles. Profiled with zeroed
+# neighbours: the setting that needs no write access to the victim's weights.
+name: "weights 0..15, input column 0"
+column: 0
+neurons: 6
+
+profiling: data/w15/campaign
+attack: data/w15/attack
+firmware_config: firmware/source/network_config.h
+
+window: [0, 10000]
+profiling_traces: 1000
+attack_traces: 1000
+
+pois_per_neuron: 1
+poi_separation: 300
+hypotheses: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
